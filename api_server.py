@@ -141,11 +141,12 @@ def encode_text(tokenizer, text):
     return tokenizer.encode(text, disallowed_special=())
 
 
-def apply_repetition_penalty(next_logits, ids, penalty):
+def apply_repetition_penalty(next_logits, ids, penalty, window_size=None):
     if penalty <= 1.0:
         return next_logits
     adjusted = next_logits.clone()
-    recent_ids = ids[0, -128:].unique()
+    effective_window = ids.size(1) if window_size is None else max(1, int(window_size))
+    recent_ids = ids[0, -effective_window:].unique()
     adjusted[:, recent_ids] = adjusted[:, recent_ids] / penalty
     return adjusted
 
@@ -172,6 +173,7 @@ def generate_text(model, tokenizer, context_length, req: GenerateRequest):
             next_logits=logits[:, -1, :],
             ids=ids,
             penalty=req.repetition_penalty,
+            window_size=context_length,
         )
         next_token = sample_next_token(
             logits=next_logits,

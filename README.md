@@ -24,13 +24,13 @@ This project trains and serves a small GPT-style language model on conversation 
 The current default model in `tiny_llm.py` is:
 
 - Architecture: GPT-style decoder (causal attention, pre-norm residual blocks, tied embeddings)
-- `context_length`: `128`
+- `context_length`: `1024`
 - `embed_size`: `768`
 - `num_heads`: `12`
 - `num_layers`: `12`
 - `dropout`: `0.1`
 - `batch_size`: `1`
-- `grad_accum_steps`: `8` (effective batch update every 8 micro-steps)
+- `grad_accum_steps`: `32` (effective batch update every 32 micro-steps)
 - Loss: assistant-targeted masked next-token loss (focuses training on `Assistant:` turns)
 - Optimization: warmup + cosine LR decay, gradient clipping (`max_norm=1.0`)
 - Tokenizer: `gpt2` (`tiktoken`)
@@ -42,13 +42,22 @@ The current default model in `tiny_llm.py` is:
 
 ### Parameter count (current config)
 
-- **123,751,680 trainable parameters** (about **123.8M**)
+- **124,439,808 trainable parameters** (about **124.4M**)
+
+What is a parameter:
+- A parameter is a learned numeric value (weight or bias) updated by backpropagation.
+- During training, these values are adjusted so next-token predictions get lower loss.
+
+Impact of parameter count:
+- More parameters: higher capacity and usually better fit on complex data.
+- More parameters: higher memory use and slower training/inference.
+- Larger models generally require more data and training compute to avoid overfitting.
 
 How this was calculated from `tiny_llm.py`:
 
 - Variables used:
   - `vocab_size = 50257` (from GPT-2 tokenizer)
-  - `context_length = 128`
+  - `context_length = 1024`
   - `embed_size = 768`
   - `num_layers = 12`
   - `num_heads = 12` (affects attention shape, not total formula independently once `embed_size` is fixed)
@@ -60,7 +69,7 @@ Breakdown:
 - Token embedding: `vocab_size * embed_size`
   - `50257 * 768 = 38,597,376`
 - Positional embedding: `context_length * embed_size`
-  - `128 * 768 = 98,304`
+  - `1024 * 768 = 786,432`
 - Per Transformer block (`12` blocks):
   - Attention params:
     - `in_proj_weight`: `3E*E`
@@ -77,7 +86,7 @@ Breakdown:
 
 Final total:
 
-- `38,597,376 + 98,304 + 85,054,464 + 1,536 = 123,751,680`
+- `38,597,376 + 786,432 + 85,054,464 + 1,536 = 124,439,808`
 
 This is a small model for local experimentation, not a production-scale LLM.
 
@@ -205,6 +214,16 @@ os.environ["HF_TOKEN"] = "hf_xxx"
 ```
 
 All paths in scripts are relative (for example `data/raw/...`, `data/train.txt`, `logs/...`), so no machine-specific absolute path is required.
+
+## Resume Across Machines (GPU <-> Mac)
+
+You can train on a GPU machine, copy checkpoints, and resume on Mac (or switch back later).
+
+See `docs/MIGRATION.md` for:
+- exact files to copy
+- `rsync`/`scp` commands
+- resume commands
+- pre-resume validation checklist
 
 ## Quality Tracking (Long Training Runs)
 

@@ -161,11 +161,12 @@ def sample_next_token(logits, temperature=0.9, top_k=40, top_p=0.95):
     return idx.gather(-1, chosen)
 
 
-def apply_repetition_penalty(next_logits, ids, penalty=1.1):
+def apply_repetition_penalty(next_logits, ids, penalty=1.1, window_size=None):
     if penalty <= 1.0:
         return next_logits
     adjusted = next_logits.clone()
-    recent_ids = ids[0, -128:].unique()
+    effective_window = ids.size(1) if window_size is None else max(1, int(window_size))
+    recent_ids = ids[0, -effective_window:].unique()
     adjusted[:, recent_ids] = adjusted[:, recent_ids] / penalty
     return adjusted
 
@@ -281,7 +282,12 @@ def generate(model, tokenizer, prompt, ctx_len, max_new_tokens, do_sample=True):
         window = ids[:, -ctx_len:]
         logits = model(window)
         next_logits = logits[:, -1, :]
-        next_logits = apply_repetition_penalty(next_logits, ids, penalty=1.1)
+        next_logits = apply_repetition_penalty(
+            next_logits,
+            ids,
+            penalty=1.1,
+            window_size=ctx_len,
+        )
         if do_sample:
             next_token = sample_next_token(next_logits)
         else:
