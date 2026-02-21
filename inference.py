@@ -122,11 +122,11 @@ def generate(model, tokenizer, prompt, context_length, max_new_tokens):
 
 if not Path(checkpoint_path).exists():
     raise FileNotFoundError(
-        f"{checkpoint_path} not found. Run `.venv/bin/python tiny_llm.py` first."
+        f"{checkpoint_path} not found. Run `python tiny_llm.py` first."
     )
 if not Path(sample_prompts_path).exists():
     raise FileNotFoundError(
-        f"{sample_prompts_path} not found. Run `.venv/bin/python prepare_dataset.py` first."
+        f"{sample_prompts_path} not found. Run `python prepare_dataset.py` first."
     )
 
 checkpoint = torch.load(checkpoint_path, map_location=device)

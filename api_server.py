@@ -98,11 +98,11 @@ class TinyGPT(nn.Module):
 class GenerateRequest(BaseModel):
     prompt: str = Field(min_length=1, description="Conversation prompt text")
     max_new_tokens: int = Field(default=100, ge=1, le=512)
-    do_sample: bool = False
-    temperature: float = Field(default=1.0, gt=0.0, le=5.0)
-    top_k: Optional[int] = Field(default=None, ge=1, le=50000)
-    top_p: Optional[float] = Field(default=None, gt=0.0, le=1.0)
-    repetition_penalty: float = Field(default=1.1, ge=1.0, le=2.0)
+    do_sample: bool = True
+    temperature: float = Field(default=0.5, gt=0.0, le=5.0)
+    top_k: Optional[int] = Field(default=15, ge=1, le=50000)
+    top_p: Optional[float] = Field(default=0.8, gt=0.0, le=1.0)
+    repetition_penalty: float = Field(default=1.25, ge=1.0, le=2.0)
 
 
 class GenerateResponse(BaseModel):
@@ -121,10 +121,8 @@ def sample_next_token(logits, do_sample, temperature, top_k, top_p):
     logits = logits / temperature
     if top_k is not None:
         k = min(top_k, logits.size(-1))
-        vals, idx = torch.topk(logits, k, dim=-1)
-        probs = torch.softmax(vals, dim=-1)
-        chosen = torch.multinomial(probs, num_samples=1)
-        return idx.gather(-1, chosen)
+        kth_vals = torch.topk(logits, k, dim=-1).values[..., -1].unsqueeze(-1)
+        logits = torch.where(logits < kth_vals, torch.full_like(logits, float("-inf")), logits)
 
     probs = torch.softmax(logits, dim=-1)
     if top_p is not None:
@@ -193,7 +191,7 @@ def generate_text(model, tokenizer, context_length, req: GenerateRequest):
 def load_runtime():
     if not checkpoint_path.exists():
         raise FileNotFoundError(
-            f"{checkpoint_path} not found. Run `.venv/bin/python tiny_llm.py` first."
+            f"{checkpoint_path} not found. Run `python tiny_llm.py` first."
         )
 
     checkpoint = torch.load(checkpoint_path, map_location=device)

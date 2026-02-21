@@ -1,3 +1,6 @@
+import csv
+from datetime import datetime, timezone
+import os
 from pathlib import Path
 
 import torch
@@ -20,9 +23,11 @@ dropout = 0.1
 batch_size = 1
 grad_accum_steps = 8
 lr = 3e-4
-steps = 6000
+min_lr = 3e-5
+steps = 120000
 eval_interval = 50
 eval_batches = 20
+eval_history_path = Path("logs/train_eval_history.csv")
 
 checkpoint_path = "tiny_llm_checkpoint.pt"
 latest_checkpoint_path = "tiny_llm_checkpoint_latest.pt"
@@ -31,6 +36,7 @@ final_checkpoint_path = "tiny_llm_checkpoint_final.pt"
 max_new_tokens = 80
 save_every_steps = 200
 resume_training = True
+resume_training = os.getenv("RESUME_TRAINING", "1") == "1"
 
 if torch.cuda.is_available():
     device = "cuda"
@@ -43,21 +49,88 @@ else:
 def load_text(path):
     if not path.exists():
         raise FileNotFoundError(
-            f"{path} not found. Run `.venv/bin/python prepare_dataset.py` first."
+            f"{path} not found. Run `python prepare_dataset.py` first."
         )
     return path.read_text(encoding="utf-8")
 
 
-def get_batch(tokens, ctx_len):
+def get_batch(tokens, target_mask, ctx_len):
     max_start = len(tokens) - ctx_len
     ix = torch.randint(0, max_start, (batch_size,), device=device)
     x = torch.stack([tokens[i:i + ctx_len] for i in ix])
     y = torch.stack([tokens[i + 1:i + ctx_len + 1] for i in ix])
-    return x, y
+    y_mask = torch.stack([target_mask[i + 1:i + ctx_len + 1] for i in ix]).float()
+    return x, y, y_mask
 
 
 def encode_text(tokenizer, text):
     return tokenizer.encode(text, disallowed_special=())
+
+
+def encode_with_assistant_mask(tokenizer, text):
+    ids = []
+    mask = []
+    for line in text.splitlines(keepends=True):
+        line_ids = encode_text(tokenizer, line)
+        is_assistant = line.lstrip().startswith("Assistant:")
+        ids.extend(line_ids)
+        mask.extend([1 if is_assistant else 0] * len(line_ids))
+    return (
+        torch.tensor(ids, device=device),
+        torch.tensor(mask, device=device, dtype=torch.float32),
+    )
+
+
+def masked_next_token_loss(logits, targets, target_mask, vocab_size):
+    token_losses = F.cross_entropy(
+        logits.reshape(-1, vocab_size),
+        targets.reshape(-1),
+        reduction="none",
+    ).view(targets.shape)
+    mask_sum = target_mask.sum()
+    if mask_sum > 0:
+        return (token_losses * target_mask).sum() / mask_sum
+    return token_losses.mean()
+
+
+def lr_for_step(step_idx):
+    warmup_steps = max(200, int(steps * 0.02))
+    if step_idx < warmup_steps:
+        return lr * float(step_idx + 1) / float(warmup_steps)
+    decay_steps = max(1, steps - warmup_steps)
+    progress = min(1.0, max(0.0, (step_idx - warmup_steps) / decay_steps))
+    cosine = 0.5 * (1.0 + torch.cos(torch.tensor(progress * 3.1415926535)).item())
+    return min_lr + (lr - min_lr) * cosine
+
+
+def append_eval_history(path, row):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    is_new = not path.exists()
+    with path.open("a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=[
+                "timestamp_utc",
+                "step",
+                "est_epoch",
+                "lr",
+                "train_loss",
+                "test_loss",
+                "test_perplexity",
+                "best_test_loss",
+                "improved",
+                "processed_tokens",
+            ],
+        )
+        if is_new:
+            writer.writeheader()
+        writer.writerow(row)
+
+
+def safe_perplexity(loss_value):
+    # Keep exponent bounded to avoid inf in logs when loss is high early in training.
+    clipped = min(float(loss_value), 20.0)
+    return float(torch.exp(torch.tensor(clipped)).item())
 
 
 def sample_next_token(logits, temperature=0.9, top_k=40, top_p=0.95):
@@ -172,15 +245,18 @@ class TinyGPT(nn.Module):
 
 
 @torch.no_grad()
-def estimate_loss(model, train_tokens, test_tokens, ctx_len, vocab_size):
+def estimate_loss(model, train_tokens, train_mask, test_tokens, test_mask, ctx_len, vocab_size):
     model.eval()
     out = {}
-    for split_name, split_tokens in (("train", train_tokens), ("test", test_tokens)):
+    for split_name, split_tokens, split_mask in (
+        ("train", train_tokens, train_mask),
+        ("test", test_tokens, test_mask),
+    ):
         losses = []
         for _ in range(eval_batches):
-            xb, yb = get_batch(split_tokens, ctx_len)
+            xb, yb, mb = get_batch(split_tokens, split_mask, ctx_len)
             logits = model(xb)
-            loss = F.cross_entropy(logits.reshape(-1, vocab_size), yb.reshape(-1))
+            loss = masked_next_token_loss(logits, yb, mb, vocab_size)
             losses.append(loss.item())
         out[split_name] = sum(losses) / len(losses)
     model.train()
@@ -204,12 +280,21 @@ def generate(model, tokenizer, prompt, ctx_len, max_new_tokens, do_sample=True):
     return tokenizer.decode(ids[0].tolist())
 
 
-def make_checkpoint_payload(model, optimizer, step, best_test_loss, vocab_size, ctx_len):
+def make_checkpoint_payload(
+    model,
+    optimizer,
+    step,
+    best_test_loss,
+    vocab_size,
+    ctx_len,
+    processed_tokens,
+):
     return {
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
         "step": step,
         "best_test_loss": best_test_loss,
+        "processed_tokens": processed_tokens,
         "vocab_size": vocab_size,
         "context_length": ctx_len,
         "embed_size": embed_size,
@@ -228,8 +313,8 @@ train_text = load_text(train_data_path)
 test_text = load_text(test_data_path)
 
 enc = tiktoken.get_encoding("gpt2")
-train_tokens = torch.tensor(encode_text(enc, train_text), device=device)
-test_tokens = torch.tensor(encode_text(enc, test_text), device=device)
+train_tokens, train_target_mask = encode_with_assistant_mask(enc, train_text)
+test_tokens, test_target_mask = encode_with_assistant_mask(enc, test_text)
 vocab_size = enc.n_vocab
 
 if len(train_tokens) < 2 or len(test_tokens) < 2:
@@ -253,6 +338,7 @@ model = TinyGPT(
 optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
 best_test_loss = float("inf")
 start_step = 0
+processed_tokens = 0
 
 if resume_training and Path(latest_checkpoint_path).exists():
     resume_ckpt = torch.load(latest_checkpoint_path, map_location=device)
@@ -261,68 +347,132 @@ if resume_training and Path(latest_checkpoint_path).exists():
         optimizer.load_state_dict(resume_ckpt["optimizer_state_dict"])
     start_step = int(resume_ckpt.get("step", -1)) + 1
     best_test_loss = float(resume_ckpt.get("best_test_loss", best_test_loss))
+    processed_tokens = int(
+        resume_ckpt.get(
+            "processed_tokens",
+            start_step * batch_size * effective_context_length,
+        )
+    )
     print(f"Resumed from {latest_checkpoint_path} at step {start_step}")
 
 progress = trange(steps, desc="training", unit="step", initial=start_step)
 optimizer.zero_grad(set_to_none=True)
-for step in range(start_step, steps):
-    if step % eval_interval == 0 or step == steps - 1:
-        losses = estimate_loss(
-            model=model,
-            train_tokens=train_tokens,
-            test_tokens=test_tokens,
-            ctx_len=effective_context_length,
-            vocab_size=vocab_size,
-        )
+last_completed_step = start_step - 1
+interrupted = False
+try:
+    for step in range(start_step, steps):
+        if step % eval_interval == 0 or step == steps - 1:
+            losses = estimate_loss(
+                model=model,
+                train_tokens=train_tokens,
+                train_mask=train_target_mask,
+                test_tokens=test_tokens,
+                test_mask=test_target_mask,
+                ctx_len=effective_context_length,
+                vocab_size=vocab_size,
+            )
+            est_epoch = processed_tokens / len(train_tokens)
+            improved = losses["test"] < best_test_loss
+            if improved:
+                best_test_loss = losses["test"]
+                best_payload = make_checkpoint_payload(
+                    model=model,
+                    optimizer=optimizer,
+                    step=step,
+                    best_test_loss=best_test_loss,
+                    vocab_size=vocab_size,
+                    ctx_len=effective_context_length,
+                    processed_tokens=processed_tokens,
+                )
+                torch.save(best_payload, best_checkpoint_path)
+                torch.save(best_payload, checkpoint_path)
+
+            append_eval_history(
+                eval_history_path,
+                {
+                    "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                    "step": step,
+                    "est_epoch": f"{est_epoch:.6f}",
+                    "lr": f"{optimizer.param_groups[0]['lr']:.8e}",
+                    "train_loss": f"{losses['train']:.6f}",
+                    "test_loss": f"{losses['test']:.6f}",
+                    "test_perplexity": f"{safe_perplexity(losses['test']):.6f}",
+                    "best_test_loss": f"{best_test_loss:.6f}",
+                    "improved": int(improved),
+                    "processed_tokens": processed_tokens,
+                },
+            )
+            progress.set_postfix(
+                train_loss=f"{losses['train']:.4f}",
+                test_loss=f"{losses['test']:.4f}",
+                test_ppl=f"{safe_perplexity(losses['test']):.1f}",
+                est_epoch=f"{est_epoch:.3f}",
+            )
+
+        xb, yb, mb = get_batch(train_tokens, train_target_mask, effective_context_length)
+        logits = model(xb)
+        loss = masked_next_token_loss(logits, yb, mb, vocab_size)
+
+        loss_to_backprop = loss / grad_accum_steps
+        loss_to_backprop.backward()
+        if ((step - start_step + 1) % grad_accum_steps == 0) or (step == steps - 1):
+            current_lr = lr_for_step(step)
+            for param_group in optimizer.param_groups:
+                param_group["lr"] = current_lr
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
+            optimizer.zero_grad(set_to_none=True)
         progress.set_postfix(
-            train_loss=f"{losses['train']:.4f}",
-            test_loss=f"{losses['test']:.4f}",
+            batch_loss=f"{loss.item():.4f}",
+            est_epoch=f"{processed_tokens / len(train_tokens):.3f}",
+            lr=f"{optimizer.param_groups[0]['lr']:.2e}",
         )
-        if losses["test"] < best_test_loss:
-            best_test_loss = losses["test"]
-            best_payload = make_checkpoint_payload(
+        progress.update(1)
+        processed_tokens += batch_size * effective_context_length
+        last_completed_step = step
+
+        if (step + 1) % save_every_steps == 0:
+            latest_payload = make_checkpoint_payload(
                 model=model,
                 optimizer=optimizer,
                 step=step,
                 best_test_loss=best_test_loss,
                 vocab_size=vocab_size,
                 ctx_len=effective_context_length,
+                processed_tokens=processed_tokens,
             )
-            torch.save(best_payload, best_checkpoint_path)
-            torch.save(best_payload, checkpoint_path)
+            torch.save(latest_payload, latest_checkpoint_path)
+except KeyboardInterrupt:
+    interrupted = True
+    print("\nTraining interrupted. Saving resumable checkpoint...")
+finally:
+    progress.close()
 
-    xb, yb = get_batch(train_tokens, effective_context_length)
-    logits = model(xb)
-    loss = F.cross_entropy(logits.reshape(-1, vocab_size), yb.reshape(-1))
+current_step = max(last_completed_step, start_step - 1)
+latest_payload = make_checkpoint_payload(
+    model=model,
+    optimizer=optimizer,
+    step=current_step,
+    best_test_loss=best_test_loss,
+    vocab_size=vocab_size,
+    ctx_len=effective_context_length,
+    processed_tokens=processed_tokens,
+)
+torch.save(latest_payload, latest_checkpoint_path)
 
-    loss_to_backprop = loss / grad_accum_steps
-    loss_to_backprop.backward()
-    if ((step - start_step + 1) % grad_accum_steps == 0) or (step == steps - 1):
-        optimizer.step()
-        optimizer.zero_grad(set_to_none=True)
-    progress.set_postfix(
-        batch_loss=f"{loss.item():.4f}",
-    )
-    progress.update(1)
-
-    if (step + 1) % save_every_steps == 0:
-        latest_payload = make_checkpoint_payload(
-            model=model,
-            optimizer=optimizer,
-            step=step,
-            best_test_loss=best_test_loss,
-            vocab_size=vocab_size,
-            ctx_len=effective_context_length,
-        )
-        torch.save(latest_payload, latest_checkpoint_path)
+if interrupted:
+    print(f"Saved latest checkpoint: {latest_checkpoint_path}")
+    print("Resume training by running: python tiny_llm.py")
+    raise SystemExit(0)
 
 final_payload = make_checkpoint_payload(
     model=model,
     optimizer=optimizer,
-    step=steps - 1,
+    step=max(current_step, steps - 1),
     best_test_loss=best_test_loss,
     vocab_size=vocab_size,
     ctx_len=effective_context_length,
+    processed_tokens=processed_tokens,
 )
 torch.save(final_payload, final_checkpoint_path)
 torch.save(final_payload, latest_checkpoint_path)
@@ -331,6 +481,7 @@ if not Path(checkpoint_path).exists():
 print(f"Saved latest checkpoint: {latest_checkpoint_path}")
 print(f"Saved final checkpoint: {final_checkpoint_path}")
 print(f"Best-serving checkpoint: {checkpoint_path}")
+print(f"Eval history CSV: {eval_history_path}")
 
 prompt = (
     "System: You are a helpful coding assistant for unit testing.\n"

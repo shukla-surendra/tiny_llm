@@ -7,10 +7,13 @@ This project trains and serves a small GPT-style language model on conversation 
 - Dataset preparation:
   - `prepare_dataset.py` (synthetic conversations)
   - `prepare_dataset_lmsys.py` (LMSYS parquet -> train/test/prompts)
+  - `audit_dataset.py` (train/test quality audit)
 - Training:
   - `tiny_llm.py`
 - Inference test:
   - `inference.py`
+- Quality evaluation:
+  - `eval_quality.py`
 - FastAPI server:
   - `api_server.py`
 - Workflow script:
@@ -28,6 +31,8 @@ The current default model in `tiny_llm.py` is:
 - `dropout`: `0.1`
 - `batch_size`: `1`
 - `grad_accum_steps`: `8` (effective batch update every 8 micro-steps)
+- Loss: assistant-targeted masked next-token loss (focuses training on `Assistant:` turns)
+- Optimization: warmup + cosine LR decay, gradient clipping (`max_norm=1.0`)
 - Tokenizer: `gpt2` (`tiktoken`)
 - Checkpoints:
   - `tiny_llm_checkpoint_latest.pt` (periodic resume checkpoint)
@@ -80,7 +85,7 @@ This is a small model for local experimentation, not a production-scale LLM.
 
 This project is **not** a 1B model right now.
 
-- Current: ~30.0M params
+- Current: ~123.8M params
 - 1B means ~1,000,000,000 params (about 8x larger than current)
 
 To approach 1B, you generally need much larger settings (example direction):
@@ -96,13 +101,49 @@ To approach 1B, you generally need much larger settings (example direction):
 1) Install dependencies
 
 ```bash
-.venv/bin/pip install -r requirements.txt
+pip install -r requirements.txt
 ```
 
 2) Build dataset (LMSYS local parquet path default in script)
 
 ```bash
 ./scripts/workflow.sh data
+```
+
+Optional dataset audit before training:
+
+```bash
+./scripts/workflow.sh audit
+```
+
+Single script to download + merge + parse all conversational datasets:
+
+```bash
+HF_TOKEN=hf_xxx ./scripts/prepare_all_datasets.sh
+```
+
+This script:
+- downloads public datasets (`UltraChat`, `OASST1`, `Dolly`, `SmolTalk`)
+- optionally downloads gated `lmsys/lmsys-chat-1m` (`INCLUDE_GATED_LMSYS=1`)
+- merges parquet inputs
+- writes `data/train.txt`, `data/test.txt`, `data/test_prompts.txt`
+
+Skip gated LMSYS if needed:
+
+```bash
+INCLUDE_GATED_LMSYS=0 ./scripts/prepare_all_datasets.sh
+```
+
+Add another dataset (optional) while generating data:
+
+```bash
+EXTRA_DATASET='HuggingFaceH4/ultrachat_200k' EXTRA_SPLIT='train_sft' ./scripts/workflow.sh data
+```
+
+Or add another local parquet dataset:
+
+```bash
+EXTRA_LOCAL_PARQUET_GLOB='/path/to/another_dataset/*.parquet' ./scripts/workflow.sh data
 ```
 
 3) Train
@@ -112,6 +153,7 @@ To approach 1B, you generally need much larger settings (example direction):
 ```
 
 Training auto-resumes from `tiny_llm_checkpoint_latest.pt` if present.
+Use `Ctrl+C` to stop safely; the script now writes a resumable latest checkpoint before exit.
 
 4) Inference test
 
@@ -119,10 +161,121 @@ Training auto-resumes from `tiny_llm_checkpoint_latest.pt` if present.
 ./scripts/workflow.sh infer
 ```
 
-5) Start API server
+5) Run quality evaluation
+
+```bash
+./scripts/workflow.sh eval
+```
+
+6) Start API server
 
 ```bash
 ./scripts/workflow.sh serve
+```
+
+## Quality Tracking (Long Training Runs)
+
+To verify that quality is actually improving over days/weeks:
+
+1. Use training eval history from `tiny_llm.py`:
+- File: `logs/train_eval_history.csv`
+- Logged every `eval_interval` steps with:
+  - `train_loss`
+  - `test_loss`
+  - `test_perplexity`
+  - `best_test_loss`
+  - `step`, `est_epoch`, `processed_tokens`
+
+2. Use checkpoint quality trend:
+- Command:
+```bash
+./scripts/workflow.sh eval
+```
+- File: `logs/quality_history.jsonl`
+- Script compares against previous run and prints delta.
+
+3. Use dataset audit gate before long runs:
+- Command:
+```bash
+./scripts/workflow.sh audit
+```
+- Verify:
+  - `noise_line_rate < 0.01`
+  - `ascii_ratio > 0.98`
+  - `assistant_exact_overlap_rate_vs_test` near `0.0`
+
+Recommended acceptance signals:
+- `best_test_loss` trends down over time.
+- `heuristic_quality_score_0_to_100` trends up (or at least stable while loss drops).
+- `role_leak_rate` and `placeholder_noise_rate` trend down.
+
+If loss improves but quality score degrades, it usually means data quality/format noise is hurting generation quality.
+
+## Conversational Datasets (Access)
+
+- `HuggingFaceH4/ultrachat_200k`: public
+- `OpenAssistant/oasst1`: public
+- `zidankhan/databricks-dolly-15k`: public
+- `HuggingFaceTB/smoltalk`: public (compact multi-domain chats)
+- `allenai/tulu-v2-sft-mixture`: public (instruction/chat mixture)
+- `lmsys/lmsys-chat-1m`: gated (public card, file access requires accepting terms + login)
+
+Public dataset mix example:
+
+```bash
+EXTRA_DATASET='HuggingFaceH4/ultrachat_200k' EXTRA_SPLIT='train_sft' ./scripts/workflow.sh data
+```
+
+Another public dataset example:
+
+```bash
+EXTRA_DATASET='OpenAssistant/oasst1' EXTRA_SPLIT='train' ./scripts/workflow.sh data
+```
+
+## Hugging Face Token (for gated datasets)
+
+How to get token:
+
+1. Go to https://huggingface.co/settings/tokens
+2. Click **New token**
+3. Select at least **Read** permission
+4. Create and copy token (starts with `hf_...`)
+
+Use it one of these ways:
+
+```bash
+export HF_TOKEN=hf_xxx
+```
+
+or interactive login:
+
+```bash
+hf auth login
+hf auth whoami
+```
+
+After login, simplest full download + parse flow:
+
+```bash
+./scripts/prepare_all_datasets.sh
+```
+
+Download gated dataset parquet files by code (no manual web download):
+
+```bash
+python prepare_dataset_lmsys.py \
+  --dataset lmsys/lmsys-chat-1m \
+  --token "$HF_TOKEN" \
+  --download-parquet-dir data/lmsys/lmsys-chat-1m \
+  --download-only
+```
+
+Then build train/test from downloaded parquet:
+
+```bash
+python prepare_dataset_lmsys.py \
+  --local-parquet-glob 'data/lmsys/lmsys-chat-1m/*.parquet' \
+  --max-samples 300000
 ```
 
 ## API example
@@ -148,6 +301,24 @@ Training auto-resumes from `tiny_llm_checkpoint_latest.pt` if present.
 - periodic checkpoint save every `save_every_steps`
 - resume after interruption (`resume_training = True`)
 - best-checkpoint tracking by `test_loss`
+
+Stop and resume flow:
+
+1. Start training:
+```bash
+./scripts/workflow.sh train
+```
+2. Stop training safely:
+- Press `Ctrl+C`
+- Script saves `tiny_llm_checkpoint_latest.pt`
+3. Resume training later:
+```bash
+./scripts/workflow.sh train
+```
+4. Start fresh without resuming:
+```bash
+RESUME_TRAINING=0 ./scripts/workflow.sh train
+```
 
 To run daily at a fixed time on macOS/Linux with `cron` (example: 2:00 AM):
 

@@ -14,6 +14,7 @@ In this repo:
 - Dataset creation: `prepare_dataset.py`
 - Training: `tiny_llm.py`
 - Inference/testing: `inference.py`
+- Quality evaluation: `eval_quality.py`
 
 ---
 
@@ -215,6 +216,12 @@ Current checkpoint flow:
 - `tiny_llm_checkpoint.pt` used for serving/inference
 - `tiny_llm_checkpoint_final.pt` saved at end of training run
 
+Safe stop and resume:
+- Press `Ctrl+C` during training to stop.
+- Training catches the interrupt and saves `tiny_llm_checkpoint_latest.pt`.
+- Run `python tiny_llm.py` again to resume from the saved step.
+- Run with `RESUME_TRAINING=0 python tiny_llm.py` to start a fresh run.
+
 ---
 
 ## 11) Inference/generation
@@ -324,31 +331,55 @@ If your goal is "understand LLM dev", do this order:
 
 Create dataset:
 ```bash
-.venv/bin/python prepare_dataset.py
+python prepare_dataset.py
 ```
 
 Train model:
 ```bash
-.venv/bin/python tiny_llm.py
+python tiny_llm.py
 ```
 
 Run inference tests:
 ```bash
-.venv/bin/python inference.py
+python inference.py
+```
+
+Run heuristic quality evaluation:
+```bash
+python eval_quality.py
+```
+
+Track quality trend over time (append + compare):
+```bash
+python eval_quality.py --compare-last --out-jsonl logs/quality_history.jsonl
 ```
 
 Train on LMSYS Chat 1M:
 ```bash
-.venv/bin/python prepare_dataset_lmsys.py --dataset lmsys/lmsys-chat-1m --split train --max-samples 200000
-.venv/bin/python tiny_llm.py
+python prepare_dataset_lmsys.py --dataset lmsys/lmsys-chat-1m --split train --max-samples 200000
+python tiny_llm.py
 ```
 
 One-command workflow (bash script):
 ```bash
 ./scripts/workflow.sh data
+./scripts/workflow.sh audit
 ./scripts/workflow.sh train
 ./scripts/workflow.sh infer
+./scripts/workflow.sh eval
 ./scripts/workflow.sh serve
+```
+
+Training also writes `logs/train_eval_history.csv` so you can track `test_loss` and `test_perplexity` over long runs.
+
+One script to download and prepare all conversational datasets:
+```bash
+HF_TOKEN=hf_xxx ./scripts/prepare_all_datasets.sh
+```
+
+Mix an additional dataset during data generation:
+```bash
+EXTRA_DATASET='HuggingFaceH4/ultrachat_200k' EXTRA_SPLIT='train_sft' ./scripts/workflow.sh data
 ```
 
 Or run all non-server steps:

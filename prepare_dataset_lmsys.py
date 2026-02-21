@@ -1,9 +1,11 @@
 import argparse
+import os
 import re
 import random
 from pathlib import Path
 
 from datasets import load_dataset
+from huggingface_hub import snapshot_download
 
 OUTPUT_DIR = Path("data")
 TRAIN_PATH = OUTPUT_DIR / "train.txt"
@@ -20,6 +22,12 @@ ROLE_MAP = {
     "gpt": "Assistant",
 }
 ALLOWED_ROLES = {"System", "User", "Assistant"}
+PLACEHOLDER_PATTERNS = (
+    "NAME_",
+    "PERSON_",
+    "EMAIL_",
+    "URL_",
+)
 
 
 def normalize_role(role):
@@ -48,6 +56,10 @@ def is_quality_text(text, min_chars, min_ascii_ratio):
         return False
     alpha_count = sum(ch.isalpha() for ch in text)
     if alpha_count < max(5, len(text) // 25):
+        return False
+    if any(p in text for p in PLACEHOLDER_PATTERNS):
+        return False
+    if text.count("```") > 2:
         return False
     return True
 
@@ -131,15 +143,37 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", default="lmsys/lmsys-chat-1m")
     parser.add_argument("--split", default="train")
+    parser.add_argument("--use-auth", action="store_true", help="Use logged-in HF auth token")
+    parser.add_argument("--token", default=None, help="HF token (or set HF_TOKEN env var)")
     parser.add_argument(
         "--local-parquet-glob",
         default=None,
         help="Local parquet glob, e.g. 'data/lmsys/lmsys-chat-1m/*.parquet'",
     )
+    parser.add_argument(
+        "--extra-local-parquet-glob",
+        action="append",
+        default=[],
+        help="Repeatable additional local parquet globs",
+    )
+    parser.add_argument(
+        "--download-parquet-dir",
+        default=None,
+        help="Download parquet files from HF dataset repo into this local directory",
+    )
+    parser.add_argument(
+        "--download-only",
+        action="store_true",
+        help="Only download parquet files then exit",
+    )
     parser.add_argument("--max-samples", type=int, default=200000)
-    parser.add_argument("--extra-dataset", default=None, help="Optional second HF dataset id")
+    parser.add_argument(
+        "--extra-dataset",
+        action="append",
+        default=[],
+        help="Repeatable additional HF dataset ids",
+    )
     parser.add_argument("--extra-split", default="train")
-    parser.add_argument("--extra-local-parquet-glob", default=None)
     parser.add_argument("--extra-max-samples", type=int, default=50000)
     parser.add_argument(
         "--cache-dir",
@@ -150,13 +184,30 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--num-prompts", type=int, default=25)
     parser.add_argument("--min-turns", type=int, default=2)
-    parser.add_argument("--min-turn-chars", type=int, default=12)
-    parser.add_argument("--min-ascii-ratio", type=float, default=0.95)
+    parser.add_argument("--min-turn-chars", type=int, default=24)
+    parser.add_argument("--min-ascii-ratio", type=float, default=0.995)
     args = parser.parse_args()
 
     random.seed(args.seed)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     Path(args.cache_dir).mkdir(parents=True, exist_ok=True)
+    token = args.token or os.getenv("HF_TOKEN")
+    token_arg = token if token else (True if args.use_auth else None)
+
+    if args.download_parquet_dir:
+        Path(args.download_parquet_dir).mkdir(parents=True, exist_ok=True)
+        snapshot_download(
+            repo_id=args.dataset,
+            repo_type="dataset",
+            local_dir=args.download_parquet_dir,
+            allow_patterns=["*.parquet", "*.json", "*.md", "*.txt"],
+            token=token_arg,
+        )
+        args.local_parquet_glob = str(Path(args.download_parquet_dir) / "*.parquet")
+        print(f"Downloaded dataset parquet files to: {args.download_parquet_dir}")
+        if args.download_only:
+            print("Download-only mode enabled. Exiting.")
+            return
 
     def load_rows(dataset_obj, sample_cap):
         loaded_rows = []
@@ -181,27 +232,40 @@ def main():
             data_files=args.local_parquet_glob,
             split="train",
             cache_dir=args.cache_dir,
+            token=token_arg,
         )
         dataset_label = f"local parquet: {args.local_parquet_glob}"
     else:
-        ds_main = load_dataset(args.dataset, split=args.split, cache_dir=args.cache_dir)
+        ds_main = load_dataset(
+            args.dataset,
+            split=args.split,
+            cache_dir=args.cache_dir,
+            token=token_arg,
+        )
         dataset_label = f"{args.dataset} ({args.split})"
 
     rows = load_rows(ds_main, args.max_samples)
 
-    if args.extra_local_parquet_glob:
+    for extra_glob in args.extra_local_parquet_glob:
         ds_extra = load_dataset(
             "parquet",
-            data_files=args.extra_local_parquet_glob,
+            data_files=extra_glob,
             split="train",
             cache_dir=args.cache_dir,
+            token=token_arg,
         )
         rows.extend(load_rows(ds_extra, args.extra_max_samples))
-        dataset_label += f" + local parquet: {args.extra_local_parquet_glob}"
-    elif args.extra_dataset:
-        ds_extra = load_dataset(args.extra_dataset, split=args.extra_split, cache_dir=args.cache_dir)
+        dataset_label += f" + local parquet: {extra_glob}"
+
+    for extra_ds in args.extra_dataset:
+        ds_extra = load_dataset(
+            extra_ds,
+            split=args.extra_split,
+            cache_dir=args.cache_dir,
+            token=token_arg,
+        )
         rows.extend(load_rows(ds_extra, args.extra_max_samples))
-        dataset_label += f" + {args.extra_dataset} ({args.extra_split})"
+        dataset_label += f" + {extra_ds} ({args.extra_split})"
 
     if len(rows) < 10:
         raise ValueError(

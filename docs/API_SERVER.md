@@ -3,7 +3,7 @@
 ## 1) Start server
 
 ```bash
-.venv/bin/uvicorn api_server:app --host 127.0.0.1 --port 8000 --reload
+uvicorn api_server:app --host 127.0.0.1 --port 8000 --reload
 ```
 
 Using workflow script:
@@ -26,15 +26,15 @@ curl -X POST http://127.0.0.1:8000/generate \
     "prompt": "System: You are a helpful coding assistant for docker workflows.\nUser: How do I debug container startup failures?\nAssistant:",
     "max_new_tokens": 80,
     "do_sample": true,
-    "temperature": 0.9,
-    "top_k": 40,
-    "top_p": 0.95,
-    "repetition_penalty": 1.1
+    "temperature": 0.5,
+    "top_k": 15,
+    "top_p": 0.8,
+    "repetition_penalty": 1.25
   }'
 ```
 
 ## 4) Python sample client
 
 ```bash
-.venv/bin/python examples/api_client.py
+python examples/api_client.py
 ```
