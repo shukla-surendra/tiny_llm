@@ -1,0 +1,29 @@
+# OS / editor
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+
+# Virtual environments
+.venv/
+venv/
+
+# Build / packaging
+build/
+dist/
+*.egg-info/
+
+# LLM project artifacts (generated)
+*.pt
+*.pth
+data/train.txt
+data/test.txt
+data/test_prompts.txt
+
+# Runtime outputs
+*.log
