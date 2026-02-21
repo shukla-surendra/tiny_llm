@@ -201,12 +201,19 @@ After training, checkpoint stores:
 - Model weights (`state_dict`)
 - Hyperparameters (heads/layers/embed/context)
 - Tokenizer name and dataset metadata
+- Optimizer state + step for resume
 
 Why save metadata too:
 - Inference must recreate exact architecture
 - Shape mismatch happens if config differs
 
 `inference.py` loads checkpoint and rebuilds model before generation.
+
+Current checkpoint flow:
+- `tiny_llm_checkpoint_latest.pt` for periodic resume saves
+- `tiny_llm_checkpoint_best.pt` for best validation checkpoint
+- `tiny_llm_checkpoint.pt` used for serving/inference
+- `tiny_llm_checkpoint_final.pt` saved at end of training run
 
 ---
 

@@ -76,6 +76,32 @@ def extract_turns(row, min_chars, min_ascii_ratio):
     return turns
 
 
+def extract_turns_instruction(row, min_chars, min_ascii_ratio):
+    # Common instruction/qa schemas (alpaca/flan-like).
+    instruction = row.get("instruction") or row.get("prompt") or row.get("question")
+    input_text = row.get("input")
+    output = row.get("output") or row.get("response") or row.get("answer") or row.get("completion")
+    if not instruction or not output:
+        return []
+
+    user_text = clean_text(instruction)
+    if input_text:
+        user_text = f"{user_text}\n{clean_text(input_text)}"
+    assistant_text = clean_text(output)
+    if not is_quality_text(user_text, min_chars=min_chars, min_ascii_ratio=min_ascii_ratio):
+        return []
+    if not is_quality_text(assistant_text, min_chars=min_chars, min_ascii_ratio=min_ascii_ratio):
+        return []
+    return [("User", user_text), ("Assistant", assistant_text)]
+
+
+def extract_turns_auto(row, min_chars, min_ascii_ratio):
+    turns = extract_turns(row, min_chars=min_chars, min_ascii_ratio=min_ascii_ratio)
+    if turns:
+        return turns
+    return extract_turns_instruction(row, min_chars=min_chars, min_ascii_ratio=min_ascii_ratio)
+
+
 def turns_to_text(turns):
     return "\n".join(f"{role}: {text}" for role, text in turns)
 
@@ -111,6 +137,10 @@ def main():
         help="Local parquet glob, e.g. 'data/lmsys/lmsys-chat-1m/*.parquet'",
     )
     parser.add_argument("--max-samples", type=int, default=200000)
+    parser.add_argument("--extra-dataset", default=None, help="Optional second HF dataset id")
+    parser.add_argument("--extra-split", default="train")
+    parser.add_argument("--extra-local-parquet-glob", default=None)
+    parser.add_argument("--extra-max-samples", type=int, default=50000)
     parser.add_argument(
         "--cache-dir",
         default=str(HF_CACHE_DIR),
@@ -128,8 +158,25 @@ def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     Path(args.cache_dir).mkdir(parents=True, exist_ok=True)
 
+    def load_rows(dataset_obj, sample_cap):
+        loaded_rows = []
+        max_samples = min(sample_cap, len(dataset_obj))
+        for i in range(max_samples):
+            turns = extract_turns_auto(
+                dataset_obj[i],
+                min_chars=args.min_turn_chars,
+                min_ascii_ratio=args.min_ascii_ratio,
+            )
+            if len(turns) < args.min_turns:
+                continue
+            roles = [r for r, _ in turns]
+            if "Assistant" not in roles or "User" not in roles:
+                continue
+            loaded_rows.append(turns)
+        return loaded_rows
+
     if args.local_parquet_glob:
-        ds = load_dataset(
+        ds_main = load_dataset(
             "parquet",
             data_files=args.local_parquet_glob,
             split="train",
@@ -137,22 +184,24 @@ def main():
         )
         dataset_label = f"local parquet: {args.local_parquet_glob}"
     else:
-        ds = load_dataset(args.dataset, split=args.split, cache_dir=args.cache_dir)
+        ds_main = load_dataset(args.dataset, split=args.split, cache_dir=args.cache_dir)
         dataset_label = f"{args.dataset} ({args.split})"
 
-    rows = []
-    max_samples = min(args.max_samples, len(ds))
-    for i in range(max_samples):
-        turns = extract_turns(
-            ds[i],
-            min_chars=args.min_turn_chars,
-            min_ascii_ratio=args.min_ascii_ratio,
+    rows = load_rows(ds_main, args.max_samples)
+
+    if args.extra_local_parquet_glob:
+        ds_extra = load_dataset(
+            "parquet",
+            data_files=args.extra_local_parquet_glob,
+            split="train",
+            cache_dir=args.cache_dir,
         )
-        if len(turns) < args.min_turns:
-            continue
-        if "Assistant" not in [r for r, _ in turns] or "User" not in [r for r, _ in turns]:
-            continue
-        rows.append(turns)
+        rows.extend(load_rows(ds_extra, args.extra_max_samples))
+        dataset_label += f" + local parquet: {args.extra_local_parquet_glob}"
+    elif args.extra_dataset:
+        ds_extra = load_dataset(args.extra_dataset, split=args.extra_split, cache_dir=args.cache_dir)
+        rows.extend(load_rows(ds_extra, args.extra_max_samples))
+        dataset_label += f" + {args.extra_dataset} ({args.extra_split})"
 
     if len(rows) < 10:
         raise ValueError(

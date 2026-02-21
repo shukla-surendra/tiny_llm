@@ -10,21 +10,27 @@ from tqdm import trange
 train_data_path = Path("data/train.txt")
 test_data_path = Path("data/test.txt")
 
-# Balanced upgrade for Apple MPS laptops: better quality without extreme VRAM pressure.
-context_length = 192
-embed_size = 384
-num_heads = 8
-num_layers = 6
+# ~120M-parameter configuration with conservative micro-batching for MPS laptops.
+context_length = 128
+embed_size = 768
+num_heads = 12
+num_layers = 12
 dropout = 0.1
 
-batch_size = 8
+batch_size = 1
+grad_accum_steps = 8
 lr = 3e-4
 steps = 6000
 eval_interval = 50
 eval_batches = 20
 
 checkpoint_path = "tiny_llm_checkpoint.pt"
+latest_checkpoint_path = "tiny_llm_checkpoint_latest.pt"
+best_checkpoint_path = "tiny_llm_checkpoint_best.pt"
+final_checkpoint_path = "tiny_llm_checkpoint_final.pt"
 max_new_tokens = 80
+save_every_steps = 200
+resume_training = True
 
 if torch.cuda.is_available():
     device = "cuda"
@@ -198,6 +204,26 @@ def generate(model, tokenizer, prompt, ctx_len, max_new_tokens, do_sample=True):
     return tokenizer.decode(ids[0].tolist())
 
 
+def make_checkpoint_payload(model, optimizer, step, best_test_loss, vocab_size, ctx_len):
+    return {
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "step": step,
+        "best_test_loss": best_test_loss,
+        "vocab_size": vocab_size,
+        "context_length": ctx_len,
+        "embed_size": embed_size,
+        "num_heads": num_heads,
+        "num_layers": num_layers,
+        "dropout": dropout,
+        "grad_accum_steps": grad_accum_steps,
+        "tokenizer": "gpt2",
+        "architecture": "gpt_decoder_pre_norm_weight_tied",
+        "train_data_path": str(train_data_path),
+        "test_data_path": str(test_data_path),
+    }
+
+
 train_text = load_text(train_data_path)
 test_text = load_text(test_data_path)
 
@@ -225,9 +251,21 @@ model = TinyGPT(
     dropout=dropout,
 ).to(device)
 optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
+best_test_loss = float("inf")
+start_step = 0
 
-progress = trange(steps, desc="training", unit="step")
-for step in progress:
+if resume_training and Path(latest_checkpoint_path).exists():
+    resume_ckpt = torch.load(latest_checkpoint_path, map_location=device)
+    model.load_state_dict(resume_ckpt["model_state_dict"])
+    if "optimizer_state_dict" in resume_ckpt:
+        optimizer.load_state_dict(resume_ckpt["optimizer_state_dict"])
+    start_step = int(resume_ckpt.get("step", -1)) + 1
+    best_test_loss = float(resume_ckpt.get("best_test_loss", best_test_loss))
+    print(f"Resumed from {latest_checkpoint_path} at step {start_step}")
+
+progress = trange(steps, desc="training", unit="step", initial=start_step)
+optimizer.zero_grad(set_to_none=True)
+for step in range(start_step, steps):
     if step % eval_interval == 0 or step == steps - 1:
         losses = estimate_loss(
             model=model,
@@ -240,35 +278,59 @@ for step in progress:
             train_loss=f"{losses['train']:.4f}",
             test_loss=f"{losses['test']:.4f}",
         )
+        if losses["test"] < best_test_loss:
+            best_test_loss = losses["test"]
+            best_payload = make_checkpoint_payload(
+                model=model,
+                optimizer=optimizer,
+                step=step,
+                best_test_loss=best_test_loss,
+                vocab_size=vocab_size,
+                ctx_len=effective_context_length,
+            )
+            torch.save(best_payload, best_checkpoint_path)
+            torch.save(best_payload, checkpoint_path)
 
     xb, yb = get_batch(train_tokens, effective_context_length)
     logits = model(xb)
     loss = F.cross_entropy(logits.reshape(-1, vocab_size), yb.reshape(-1))
 
-    optimizer.zero_grad(set_to_none=True)
-    loss.backward()
-    optimizer.step()
+    loss_to_backprop = loss / grad_accum_steps
+    loss_to_backprop.backward()
+    if ((step - start_step + 1) % grad_accum_steps == 0) or (step == steps - 1):
+        optimizer.step()
+        optimizer.zero_grad(set_to_none=True)
     progress.set_postfix(
         batch_loss=f"{loss.item():.4f}",
     )
+    progress.update(1)
 
-torch.save(
-    {
-        "model_state_dict": model.state_dict(),
-        "vocab_size": vocab_size,
-        "context_length": effective_context_length,
-        "embed_size": embed_size,
-        "num_heads": num_heads,
-        "num_layers": num_layers,
-        "dropout": dropout,
-        "tokenizer": "gpt2",
-        "architecture": "gpt_decoder_pre_norm_weight_tied",
-        "train_data_path": str(train_data_path),
-        "test_data_path": str(test_data_path),
-    },
-    checkpoint_path,
+    if (step + 1) % save_every_steps == 0:
+        latest_payload = make_checkpoint_payload(
+            model=model,
+            optimizer=optimizer,
+            step=step,
+            best_test_loss=best_test_loss,
+            vocab_size=vocab_size,
+            ctx_len=effective_context_length,
+        )
+        torch.save(latest_payload, latest_checkpoint_path)
+
+final_payload = make_checkpoint_payload(
+    model=model,
+    optimizer=optimizer,
+    step=steps - 1,
+    best_test_loss=best_test_loss,
+    vocab_size=vocab_size,
+    ctx_len=effective_context_length,
 )
-print(f"Saved checkpoint: {checkpoint_path}")
+torch.save(final_payload, final_checkpoint_path)
+torch.save(final_payload, latest_checkpoint_path)
+if not Path(checkpoint_path).exists():
+    torch.save(final_payload, checkpoint_path)
+print(f"Saved latest checkpoint: {latest_checkpoint_path}")
+print(f"Saved final checkpoint: {final_checkpoint_path}")
+print(f"Best-serving checkpoint: {checkpoint_path}")
 
 prompt = (
     "System: You are a helpful coding assistant for unit testing.\n"
