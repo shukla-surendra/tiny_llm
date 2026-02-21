@@ -27,3 +27,4 @@ data/test_prompts.txt
 
 # Runtime outputs
 *.log
+data

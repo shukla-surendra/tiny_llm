@@ -6,6 +6,11 @@
 .venv/bin/uvicorn api_server:app --host 127.0.0.1 --port 8000 --reload
 ```
 
+Using workflow script:
+```bash
+./scripts/workflow.sh serve
+```
+
 ## 2) Health check
 
 ```bash
@@ -22,7 +27,9 @@ curl -X POST http://127.0.0.1:8000/generate \
     "max_new_tokens": 80,
     "do_sample": true,
     "temperature": 0.9,
-    "top_k": 40
+    "top_k": 40,
+    "top_p": 0.95,
+    "repetition_penalty": 1.1
   }'
 ```
 

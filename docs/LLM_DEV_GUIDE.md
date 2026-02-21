@@ -330,6 +330,25 @@ Run inference tests:
 .venv/bin/python inference.py
 ```
 
+Train on LMSYS Chat 1M:
+```bash
+.venv/bin/python prepare_dataset_lmsys.py --dataset lmsys/lmsys-chat-1m --split train --max-samples 200000
+.venv/bin/python tiny_llm.py
+```
+
+One-command workflow (bash script):
+```bash
+./scripts/workflow.sh data
+./scripts/workflow.sh train
+./scripts/workflow.sh infer
+./scripts/workflow.sh serve
+```
+
+Or run all non-server steps:
+```bash
+./scripts/workflow.sh pipeline
+```
+
 ---
 
 ## 16) Important conceptual glossary
@@ -355,4 +374,3 @@ Run inference tests:
 
 It is Transformer-based.
 Specifically: a small GPT-style autoregressive language model with causal masking.
-
