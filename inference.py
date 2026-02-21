@@ -108,6 +108,27 @@ def encode_text(tokenizer, text):
     return tokenizer.encode(text, disallowed_special=())
 
 
+def sample_next_token(logits, temperature=0.8, top_k=40, top_p=0.9):
+    logits = logits / temperature
+    # Top-k
+    v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+    logits[logits < v[:, [-1]]] = -float('Inf')
+    
+    probs = torch.softmax(logits, dim=-1)
+    
+    # Top-p (Nucleus)
+    sorted_probs, sorted_indices = torch.sort(probs, descending=True)
+    cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
+    sorted_indices_to_remove = cumulative_probs > top_p
+    sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+    sorted_indices_to_remove[..., 0] = 0
+    indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
+    probs[indices_to_remove] = 0
+    probs = probs / probs.sum(dim=-1, keepdim=True)
+    
+    return torch.multinomial(probs, 1)
+
+
 @torch.no_grad()
 def generate(model, tokenizer, prompt, context_length, max_new_tokens):
     model.eval()
@@ -115,7 +136,7 @@ def generate(model, tokenizer, prompt, context_length, max_new_tokens):
     for _ in range(max_new_tokens):
         window = ids[:, -context_length:]
         logits = model(window)
-        next_token = torch.argmax(logits[:, -1], dim=-1, keepdim=True)
+        next_token = sample_next_token(logits[:, -1, :])
         ids = torch.cat([ids, next_token], dim=1)
     return tokenizer.decode(ids[0].tolist())
 

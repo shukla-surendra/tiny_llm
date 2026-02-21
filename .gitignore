@@ -28,3 +28,5 @@ data/test_prompts.txt
 # Runtime outputs
 *.log
 data
+logs
+logs/train_eval_history.csv

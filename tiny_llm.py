@@ -15,14 +15,14 @@ train_data_path = Path("data/train.txt")
 test_data_path = Path("data/test.txt")
 
 # ~120M-parameter configuration with conservative micro-batching for MPS laptops.
-context_length = 128
+context_length = 1024
 embed_size = 768
 num_heads = 12
 num_layers = 12
 dropout = 0.1
 
 batch_size = 1
-grad_accum_steps = 8
+grad_accum_steps = 32
 lr = 3e-4
 min_lr = 3e-5
 steps = 1000000 # 1M Steps
