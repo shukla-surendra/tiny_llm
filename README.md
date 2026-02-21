@@ -173,6 +173,39 @@ Use `Ctrl+C` to stop safely; the script now writes a resumable latest checkpoint
 ./scripts/workflow.sh serve
 ```
 
+## Google Colab Compatibility
+
+The project is compatible with Colab as-is after these steps:
+
+1. Clone and install deps:
+```bash
+!git clone <your-repo-url>
+%cd tiny_llm
+!pip install -r requirements.txt
+```
+
+2. Prepare data:
+```bash
+!bash scripts/prepare_all_datasets.sh
+```
+If using gated LMSYS in Colab:
+```bash
+import os
+os.environ["HF_TOKEN"] = "hf_xxx"
+```
+
+3. Train:
+```bash
+!bash scripts/workflow.sh train
+```
+
+4. Evaluate:
+```bash
+!bash scripts/workflow.sh eval
+```
+
+All paths in scripts are relative (for example `data/raw/...`, `data/train.txt`, `logs/...`), so no machine-specific absolute path is required.
+
 ## Quality Tracking (Long Training Runs)
 
 To verify that quality is actually improving over days/weeks:
@@ -184,7 +217,7 @@ To verify that quality is actually improving over days/weeks:
   - `test_loss`
   - `test_perplexity`
   - `best_test_loss`
-  - `step`, `est_epoch`, `processed_tokens`
+  - `step`, `est_epoch`, `processed_tokens`, `total_training_hours`
 
 2. Use checkpoint quality trend:
 - Command:
@@ -274,7 +307,7 @@ Then build train/test from downloaded parquet:
 
 ```bash
 python prepare_dataset_lmsys.py \
-  --local-parquet-glob 'data/lmsys/lmsys-chat-1m/*.parquet' \
+  --local-parquet-glob 'data/raw/lmsys_lmsys-chat-1m/**/*.parquet' \
   --max-samples 300000
 ```
 
@@ -301,6 +334,7 @@ python prepare_dataset_lmsys.py \
 - periodic checkpoint save every `save_every_steps`
 - resume after interruption (`resume_training = True`)
 - best-checkpoint tracking by `test_loss`
+- cumulative wall-clock training time tracking across resumes (`total_training_seconds`)
 
 Stop and resume flow:
 
@@ -329,7 +363,7 @@ crontab -e
 Add:
 
 ```cron
-0 2 * * * cd /Users/surendrashukla/projects/tiny_llm && /bin/zsh -lc './scripts/workflow.sh train >> logs/train.log 2>&1'
+0 2 * * * cd /path/to/tiny_llm && /bin/zsh -lc './scripts/workflow.sh train >> logs/train.log 2>&1'
 ```
 
 Create logs directory once:

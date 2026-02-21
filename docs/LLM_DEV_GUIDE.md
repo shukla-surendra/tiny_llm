@@ -203,6 +203,7 @@ After training, checkpoint stores:
 - Hyperparameters (heads/layers/embed/context)
 - Tokenizer name and dataset metadata
 - Optimizer state + step for resume
+- Cumulative wall-clock training time (`total_training_seconds`) across resumed runs
 
 Why save metadata too:
 - Inference must recreate exact architecture

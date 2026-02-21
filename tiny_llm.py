@@ -2,6 +2,7 @@ import csv
 from datetime import datetime, timezone
 import os
 from pathlib import Path
+import time
 
 import torch
 import torch.nn as nn
@@ -24,7 +25,7 @@ batch_size = 1
 grad_accum_steps = 8
 lr = 3e-4
 min_lr = 3e-5
-steps = 120000
+steps = 1000000 # 1M Steps
 eval_interval = 50
 eval_batches = 20
 eval_history_path = Path("logs/train_eval_history.csv")
@@ -120,6 +121,7 @@ def append_eval_history(path, row):
                 "best_test_loss",
                 "improved",
                 "processed_tokens",
+                "total_training_hours",
             ],
         )
         if is_new:
@@ -131,6 +133,14 @@ def safe_perplexity(loss_value):
     # Keep exponent bounded to avoid inf in logs when loss is high early in training.
     clipped = min(float(loss_value), 20.0)
     return float(torch.exp(torch.tensor(clipped)).item())
+
+
+def format_duration(total_seconds):
+    total_seconds = int(max(0, total_seconds))
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+    seconds = total_seconds % 60
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
 def sample_next_token(logits, temperature=0.9, top_k=40, top_p=0.95):
@@ -288,6 +298,7 @@ def make_checkpoint_payload(
     vocab_size,
     ctx_len,
     processed_tokens,
+    total_training_seconds,
 ):
     return {
         "model_state_dict": model.state_dict(),
@@ -295,6 +306,7 @@ def make_checkpoint_payload(
         "step": step,
         "best_test_loss": best_test_loss,
         "processed_tokens": processed_tokens,
+        "total_training_seconds": float(total_training_seconds),
         "vocab_size": vocab_size,
         "context_length": ctx_len,
         "embed_size": embed_size,
@@ -339,6 +351,7 @@ optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
 best_test_loss = float("inf")
 start_step = 0
 processed_tokens = 0
+total_training_seconds = 0.0
 
 if resume_training and Path(latest_checkpoint_path).exists():
     resume_ckpt = torch.load(latest_checkpoint_path, map_location=device)
@@ -353,7 +366,15 @@ if resume_training and Path(latest_checkpoint_path).exists():
             start_step * batch_size * effective_context_length,
         )
     )
+    total_training_seconds = float(resume_ckpt.get("total_training_seconds", 0.0))
     print(f"Resumed from {latest_checkpoint_path} at step {start_step}")
+    print(f"Cumulative training time: {format_duration(total_training_seconds)}")
+
+run_start_time = time.time()
+
+
+def current_total_training_seconds():
+    return total_training_seconds + (time.time() - run_start_time)
 
 progress = trange(steps, desc="training", unit="step", initial=start_step)
 optimizer.zero_grad(set_to_none=True)
@@ -383,6 +404,7 @@ try:
                     vocab_size=vocab_size,
                     ctx_len=effective_context_length,
                     processed_tokens=processed_tokens,
+                    total_training_seconds=current_total_training_seconds(),
                 )
                 torch.save(best_payload, best_checkpoint_path)
                 torch.save(best_payload, checkpoint_path)
@@ -400,6 +422,7 @@ try:
                     "best_test_loss": f"{best_test_loss:.6f}",
                     "improved": int(improved),
                     "processed_tokens": processed_tokens,
+                    "total_training_hours": f"{current_total_training_seconds() / 3600.0:.4f}",
                 },
             )
             progress.set_postfix(
@@ -407,6 +430,7 @@ try:
                 test_loss=f"{losses['test']:.4f}",
                 test_ppl=f"{safe_perplexity(losses['test']):.1f}",
                 est_epoch=f"{est_epoch:.3f}",
+                total_h=f"{current_total_training_seconds() / 3600.0:.2f}",
             )
 
         xb, yb, mb = get_batch(train_tokens, train_target_mask, effective_context_length)
@@ -440,6 +464,7 @@ try:
                 vocab_size=vocab_size,
                 ctx_len=effective_context_length,
                 processed_tokens=processed_tokens,
+                total_training_seconds=current_total_training_seconds(),
             )
             torch.save(latest_payload, latest_checkpoint_path)
 except KeyboardInterrupt:
@@ -447,6 +472,7 @@ except KeyboardInterrupt:
     print("\nTraining interrupted. Saving resumable checkpoint...")
 finally:
     progress.close()
+    total_training_seconds = current_total_training_seconds()
 
 current_step = max(last_completed_step, start_step - 1)
 latest_payload = make_checkpoint_payload(
@@ -457,11 +483,13 @@ latest_payload = make_checkpoint_payload(
     vocab_size=vocab_size,
     ctx_len=effective_context_length,
     processed_tokens=processed_tokens,
+    total_training_seconds=total_training_seconds,
 )
 torch.save(latest_payload, latest_checkpoint_path)
 
 if interrupted:
     print(f"Saved latest checkpoint: {latest_checkpoint_path}")
+    print(f"Total cumulative training time: {format_duration(total_training_seconds)}")
     print("Resume training by running: python tiny_llm.py")
     raise SystemExit(0)
 
@@ -473,6 +501,7 @@ final_payload = make_checkpoint_payload(
     vocab_size=vocab_size,
     ctx_len=effective_context_length,
     processed_tokens=processed_tokens,
+    total_training_seconds=total_training_seconds,
 )
 torch.save(final_payload, final_checkpoint_path)
 torch.save(final_payload, latest_checkpoint_path)
@@ -482,6 +511,7 @@ print(f"Saved latest checkpoint: {latest_checkpoint_path}")
 print(f"Saved final checkpoint: {final_checkpoint_path}")
 print(f"Best-serving checkpoint: {checkpoint_path}")
 print(f"Eval history CSV: {eval_history_path}")
+print(f"Total cumulative training time: {format_duration(total_training_seconds)}")
 
 prompt = (
     "System: You are a helpful coding assistant for unit testing.\n"

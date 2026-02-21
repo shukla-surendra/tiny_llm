@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PY="${PY:-python}"
+if [[ -n "${PY:-}" ]]; then
+  PY_BIN="$PY"
+elif command -v python >/dev/null 2>&1; then
+  PY_BIN="python"
+else
+  PY_BIN="python3"
+fi
 
 # Toggle gated LMSYS dataset download.
 INCLUDE_GATED_LMSYS="${INCLUDE_GATED_LMSYS:-1}"
@@ -39,13 +45,13 @@ download_dataset() {
   echo "[download] $dataset_id -> $out_dir"
 
   if [[ -n "$HF_TOKEN" ]]; then
-    "$PY" prepare_dataset_lmsys.py \
+    "$PY_BIN" prepare_dataset_lmsys.py \
       --dataset "$dataset_id" \
       --token "$HF_TOKEN" \
       --download-parquet-dir "$out_dir" \
       --download-only
   else
-    "$PY" prepare_dataset_lmsys.py \
+    "$PY_BIN" prepare_dataset_lmsys.py \
       --dataset "$dataset_id" \
       --use-auth \
       --download-parquet-dir "$out_dir" \
@@ -82,7 +88,7 @@ fi
 
 echo "[stage] building train/test prompts"
 cmd=(
-  "$PY" prepare_dataset_lmsys.py
+  "$PY_BIN" prepare_dataset_lmsys.py
   --local-parquet-glob "${PARQUET_GLOBS[0]}"
   --max-samples "$MAX_SAMPLES"
   --num-prompts "$NUM_PROMPTS"

@@ -7,7 +7,7 @@ import torch.nn as nn
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-checkpoint_path = Path("tiny_llm_checkpoint.pt")
+checkpoint_path = Path("tiny_llm_checkpoint_latest.pt")
 if torch.cuda.is_available():
     device = "cuda"
 elif torch.backends.mps.is_available():

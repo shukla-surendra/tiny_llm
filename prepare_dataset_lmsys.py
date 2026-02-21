@@ -2,6 +2,7 @@ import argparse
 import os
 import re
 import random
+import glob
 from pathlib import Path
 
 from datasets import load_dataset
@@ -148,7 +149,7 @@ def main():
     parser.add_argument(
         "--local-parquet-glob",
         default=None,
-        help="Local parquet glob, e.g. 'data/lmsys/lmsys-chat-1m/*.parquet'",
+        help="Local parquet glob, e.g. 'data/raw/lmsys_lmsys-chat-1m/**/*.parquet'",
     )
     parser.add_argument(
         "--extra-local-parquet-glob",
@@ -194,6 +195,34 @@ def main():
     token = args.token or os.getenv("HF_TOKEN")
     token_arg = token if token else (True if args.use_auth else None)
 
+    def expand_local_parquet_files(pattern):
+        # Support recursive globs such as data/raw/**/.parquet and plain file paths.
+        matches = sorted(glob.glob(pattern, recursive=True))
+        if matches:
+            return [m for m in matches if Path(m).is_file()]
+        p = Path(pattern)
+        return [str(p)] if p.is_file() else []
+
+    def load_rows_from_local_files(file_list, total_cap):
+        loaded = []
+        for fpath in file_list:
+            remaining = total_cap - len(loaded)
+            if remaining <= 0:
+                break
+            try:
+                ds_part = load_dataset(
+                    "parquet",
+                    data_files=fpath,
+                    split="train",
+                    cache_dir=args.cache_dir,
+                    token=token_arg,
+                )
+            except Exception as e:
+                print(f"[warn] skipping unreadable parquet file: {fpath} ({e})")
+                continue
+            loaded.extend(load_rows(ds_part, remaining))
+        return loaded
+
     if args.download_parquet_dir:
         Path(args.download_parquet_dir).mkdir(parents=True, exist_ok=True)
         snapshot_download(
@@ -227,14 +256,13 @@ def main():
         return loaded_rows
 
     if args.local_parquet_glob:
-        ds_main = load_dataset(
-            "parquet",
-            data_files=args.local_parquet_glob,
-            split="train",
-            cache_dir=args.cache_dir,
-            token=token_arg,
-        )
-        dataset_label = f"local parquet: {args.local_parquet_glob}"
+        main_files = expand_local_parquet_files(args.local_parquet_glob)
+        if not main_files:
+            raise ValueError(
+                f"No parquet files matched --local-parquet-glob: {args.local_parquet_glob}"
+            )
+        rows = load_rows_from_local_files(main_files, args.max_samples)
+        dataset_label = f"local parquet files: {len(main_files)} from {args.local_parquet_glob}"
     else:
         ds_main = load_dataset(
             args.dataset,
@@ -243,19 +271,15 @@ def main():
             token=token_arg,
         )
         dataset_label = f"{args.dataset} ({args.split})"
-
-    rows = load_rows(ds_main, args.max_samples)
+        rows = load_rows(ds_main, args.max_samples)
 
     for extra_glob in args.extra_local_parquet_glob:
-        ds_extra = load_dataset(
-            "parquet",
-            data_files=extra_glob,
-            split="train",
-            cache_dir=args.cache_dir,
-            token=token_arg,
-        )
-        rows.extend(load_rows(ds_extra, args.extra_max_samples))
-        dataset_label += f" + local parquet: {extra_glob}"
+        extra_files = expand_local_parquet_files(extra_glob)
+        if not extra_files:
+            print(f"[warn] no parquet files matched extra glob: {extra_glob}")
+            continue
+        rows.extend(load_rows_from_local_files(extra_files, args.extra_max_samples))
+        dataset_label += f" + local parquet files: {len(extra_files)} from {extra_glob}"
 
     for extra_ds in args.extra_dataset:
         ds_extra = load_dataset(

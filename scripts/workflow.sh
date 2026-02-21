@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PY="${PY:-python}"
-UVICORN="${UVICORN:-uvicorn}"
+if [[ -n "${PY:-}" ]]; then
+  PY_BIN="$PY"
+elif command -v python >/dev/null 2>&1; then
+  PY_BIN="python"
+else
+  PY_BIN="python3"
+fi
 
-LMSYS_PARQUET_GLOB="${LMSYS_PARQUET_GLOB:-/Users/surendrashukla/projects/tiny_llm/data/lmsys/lmsys-chat-1m/*.parquet}"
+LMSYS_PARQUET_GLOB="${LMSYS_PARQUET_GLOB:-data/raw/lmsys_lmsys-chat-1m/**/*.parquet}"
 MAX_SAMPLES="${MAX_SAMPLES:-300000}"
 NUM_PROMPTS="${NUM_PROMPTS:-25}"
 MIN_TURNS="${MIN_TURNS:-3}"
@@ -31,7 +36,7 @@ EOF
 
 run_data() {
   cmd=(
-    "$PY" prepare_dataset_lmsys.py
+    "$PY_BIN" prepare_dataset_lmsys.py
     --local-parquet-glob "$LMSYS_PARQUET_GLOB"
     --max-samples "$MAX_SAMPLES"
     --num-prompts "$NUM_PROMPTS"
@@ -52,27 +57,27 @@ run_data() {
 }
 
 run_data_synth() {
-  "$PY" prepare_dataset.py
+  "$PY_BIN" prepare_dataset.py
 }
 
 run_audit() {
-  "$PY" audit_dataset.py
+  "$PY_BIN" audit_dataset.py
 }
 
 run_train() {
-  "$PY" tiny_llm.py
+  "$PY_BIN" tiny_llm.py
 }
 
 run_infer() {
-  "$PY" inference.py
+  "$PY_BIN" inference.py
 }
 
 run_eval() {
-  "$PY" eval_quality.py --compare-last --out-jsonl logs/quality_history.jsonl
+  "$PY_BIN" eval_quality.py --compare-last --out-jsonl logs/quality_history.jsonl
 }
 
 run_serve() {
-  "$UVICORN" api_server:app --host 127.0.0.1 --port 8000 --reload
+  "$PY_BIN" -m uvicorn api_server:app --host 127.0.0.1 --port 8000 --reload
 }
 
 if [[ $# -lt 1 ]]; then
