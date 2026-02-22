@@ -18,6 +18,8 @@ This project trains and serves a small GPT-style language model on conversation 
   - `api_server.py`
 - Workflow script:
   - `scripts/workflow.sh`
+- Storage:
+  - `scripts/upload_to_hf.py` (Upload artifacts to Hugging Face Hub)
 
 ## Current model details
 

@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import tiktoken
 
-checkpoint_path = "tiny_llm_checkpoint.pt"
+checkpoint_path = "tiny_llm_checkpoint_best.pt"
 sample_prompts_path = "data/test_prompts.txt"
 max_new_tokens = 60
 if torch.cuda.is_available():
@@ -147,7 +147,7 @@ if not Path(checkpoint_path).exists():
     )
 if not Path(sample_prompts_path).exists():
     raise FileNotFoundError(
-        f"{sample_prompts_path} not found. Run `python prepare_dataset.py` first."
+        f"{sample_prompts_path} not found. Run `python prepare_dataset_lmsys.py` first."
     )
 
 checkpoint = torch.load(checkpoint_path, map_location=device)

@@ -30,6 +30,7 @@ Usage:
   scripts/workflow.sh infer       # run inference on test prompts
   scripts/workflow.sh eval        # run heuristic quality evaluation
   scripts/workflow.sh serve       # start FastAPI server
+  scripts/workflow.sh upload <id> # upload model artifacts to HF Hub
   scripts/workflow.sh pipeline    # data + train + infer + eval
 EOF
 }
@@ -80,6 +81,14 @@ run_serve() {
   "$PY_BIN" -m uvicorn api_server:app --host 127.0.0.1 --port 8000 --reload
 }
 
+run_upload() {
+  if [[ -z "${1:-}" ]]; then
+    echo "Error: Repo ID required. Usage: ./scripts/workflow.sh upload username/repo-name"
+    exit 1
+  fi
+  "$PY_BIN" scripts/upload_to_hf.py --repo-id "$1"
+}
+
 if [[ $# -lt 1 ]]; then
   usage
   exit 1
@@ -93,6 +102,10 @@ case "$1" in
   infer) run_infer ;;
   eval) run_eval ;;
   serve) run_serve ;;
+  upload)
+    shift
+    run_upload "${1:-}"
+    ;;
   pipeline)
     run_data
     run_train

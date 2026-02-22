@@ -49,8 +49,10 @@ num_heads = 12
 num_layers = 12
 dropout = 0.1
 
-batch_size = 1
-grad_accum_steps = 32
+# TODO: If training on AWS g5.2xlarge (A10G GPU), set batch_size=16 and grad_accum_steps=2
+# to utilize the 24GB VRAM and speed up training significantly.
+batch_size = 1  # Set to 1 for MPS/Laptop to minimize VRAM usage
+grad_accum_steps = 32  # Accumulate gradients to simulate batch_size=32
 lr = 3e-4
 min_lr = 3e-5
 steps = 1000000 # 1M Steps
@@ -64,11 +66,13 @@ best_checkpoint_path = artifact_root / "tiny_llm_checkpoint_best.pt"
 final_checkpoint_path = artifact_root / "tiny_llm_checkpoint_final.pt"
 max_new_tokens = 80
 save_every_steps = 200
-resume_training = True
 resume_training = os.getenv("RESUME_TRAINING", "1") == "1"
 
 if torch.cuda.is_available():
     device = "cuda"
+    # Enable TF32 on Ampere GPUs (like A10G on g5.2xlarge) for ~3x speedup
+    torch.set_float32_matmul_precision("high")
+    print("CUDA detected: Enabled TF32 matmul precision.")
 elif torch.backends.mps.is_available():
     device = "mps"
 else:
@@ -78,7 +82,7 @@ else:
 def load_text(path):
     if not path.exists():
         raise FileNotFoundError(
-            f"{path} not found. Run `python prepare_dataset.py` first."
+            f"{path} not found. Run `python prepare_dataset_lmsys.py` first."
         )
     return path.read_text(encoding="utf-8")
 
