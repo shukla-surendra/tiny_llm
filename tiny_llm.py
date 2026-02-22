@@ -392,21 +392,39 @@ processed_tokens = 0
 total_training_seconds = 0.0
 
 if resume_training and latest_checkpoint_path.exists():
-    resume_ckpt = torch.load(latest_checkpoint_path, map_location=device)
-    model.load_state_dict(resume_ckpt["model_state_dict"])
-    if "optimizer_state_dict" in resume_ckpt:
-        optimizer.load_state_dict(resume_ckpt["optimizer_state_dict"])
-    start_step = int(resume_ckpt.get("step", -1)) + 1
-    best_test_loss = float(resume_ckpt.get("best_test_loss", best_test_loss))
-    processed_tokens = int(
-        resume_ckpt.get(
-            "processed_tokens",
-            start_step * batch_size * effective_context_length,
+    try:
+        print(f"Attempting to resume from {latest_checkpoint_path}...")
+        resume_ckpt = torch.load(latest_checkpoint_path, map_location=device)
+        print(f"Successfully loaded {latest_checkpoint_path}.")
+    except RuntimeError as e:
+        print(f"Warning: Failed to load latest checkpoint {latest_checkpoint_path}: {e}")
+        if best_checkpoint_path.exists():
+            try:
+                print(f"Attempting to fall back to best checkpoint {best_checkpoint_path}...")
+                resume_ckpt = torch.load(best_checkpoint_path, map_location=device)
+                print(f"Successfully loaded {best_checkpoint_path}.")
+            except RuntimeError as e_best:
+                print(f"Error: Failed to load best checkpoint {best_checkpoint_path} as well: {e_best}")
+                resume_ckpt = None
+        else:
+            print("No best checkpoint found to fall back to.")
+            resume_ckpt = None
+    
+    if resume_ckpt:
+        model.load_state_dict(resume_ckpt["model_state_dict"])
+        if "optimizer_state_dict" in resume_ckpt:
+            optimizer.load_state_dict(resume_ckpt["optimizer_state_dict"])
+        start_step = int(resume_ckpt.get("step", -1)) + 1
+        best_test_loss = float(resume_ckpt.get("best_test_loss", best_test_loss))
+        processed_tokens = int(
+            resume_ckpt.get(
+                "processed_tokens",
+                start_step * batch_size * effective_context_length,
+            )
         )
-    )
-    total_training_seconds = float(resume_ckpt.get("total_training_seconds", 0.0))
-    print(f"Resumed from {latest_checkpoint_path} at step {start_step}")
-    print(f"Cumulative training time: {format_duration(total_training_seconds)}")
+        total_training_seconds = float(resume_ckpt.get("total_training_seconds", 0.0))
+        print(f"Resumed from checkpoint at step {start_step}")
+        print(f"Cumulative training time: {format_duration(total_training_seconds)}")
 
 run_start_time = time.time()
 
