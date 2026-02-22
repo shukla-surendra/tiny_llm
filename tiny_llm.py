@@ -42,19 +42,19 @@ else:
 train_data_path = data_root / "train.txt"
 test_data_path = data_root / "test.txt"
 
-# ~120M-parameter configuration with conservative micro-batching for MPS laptops.
+# ~150M-parameter configuration with conservative micro-batching for MPS laptops.
 context_length = 1024
 embed_size = 768
 num_heads = 12
-num_layers = 12
+num_layers = 16
 dropout = 0.1
 
 # TODO: If training on AWS g5.2xlarge (A10G GPU), set batch_size=16 and grad_accum_steps=2
 # to utilize the 24GB VRAM and speed up training significantly.
 batch_size = 1  # Set to 1 for MPS/Laptop to minimize VRAM usage
 grad_accum_steps = 32  # Accumulate gradients to simulate batch_size=32
-lr = 3e-4
-min_lr = 3e-5
+lr = 2e-4
+min_lr = 2e-5
 steps = 1000000 # 1M Steps
 eval_interval = 50
 eval_batches = 20
@@ -100,12 +100,31 @@ def encode_text(tokenizer, text):
     return tokenizer.encode(text, disallowed_special=())
 
 
+def detect_role(line):
+    stripped = line.lstrip()
+    if stripped.startswith("System:"):
+        return "system"
+    if stripped.startswith("User:"):
+        return "user"
+    if stripped.startswith("Assistant:"):
+        return "assistant"
+    if stripped.startswith("<END_PROMPT>"):
+        return "separator"
+    return None
+
+
 def encode_with_assistant_mask(tokenizer, text):
     ids = []
     mask = []
+    current_role = None
     for line in text.splitlines(keepends=True):
+        detected_role = detect_role(line)
+        if detected_role == "separator":
+            current_role = None
+        elif detected_role is not None:
+            current_role = detected_role
         line_ids = encode_text(tokenizer, line)
-        is_assistant = line.lstrip().startswith("Assistant:")
+        is_assistant = current_role == "assistant"
         ids.extend(line_ids)
         mask.extend([1 if is_assistant else 0] * len(line_ids))
     return (
@@ -385,7 +404,7 @@ model = TinyGPT(
     num_layers=num_layers,
     dropout=dropout,
 ).to(device)
-optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
+optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.1)
 best_test_loss = float("inf")
 start_step = 0
 processed_tokens = 0
@@ -411,20 +430,49 @@ if resume_training and latest_checkpoint_path.exists():
             resume_ckpt = None
     
     if resume_ckpt:
-        model.load_state_dict(resume_ckpt["model_state_dict"])
-        if "optimizer_state_dict" in resume_ckpt:
-            optimizer.load_state_dict(resume_ckpt["optimizer_state_dict"])
-        start_step = int(resume_ckpt.get("step", -1)) + 1
-        best_test_loss = float(resume_ckpt.get("best_test_loss", best_test_loss))
-        processed_tokens = int(
-            resume_ckpt.get(
-                "processed_tokens",
-                start_step * batch_size * effective_context_length,
-            )
+        ckpt_embed = int(resume_ckpt.get("embed_size", -1))
+        ckpt_heads = int(resume_ckpt.get("num_heads", -1))
+        ckpt_layers = int(resume_ckpt.get("num_layers", -1))
+        ckpt_ctx = int(resume_ckpt.get("context_length", -1))
+        expected_vocab = int(vocab_size)
+        ckpt_vocab = int(resume_ckpt.get("vocab_size", -1))
+
+        compatible = (
+            ckpt_embed == embed_size
+            and ckpt_heads == num_heads
+            and ckpt_layers == num_layers
+            and ckpt_ctx == effective_context_length
+            and ckpt_vocab == expected_vocab
         )
-        total_training_seconds = float(resume_ckpt.get("total_training_seconds", 0.0))
-        print(f"Resumed from checkpoint at step {start_step}")
-        print(f"Cumulative training time: {format_duration(total_training_seconds)}")
+
+        if not compatible:
+            print("Warning: Resume checkpoint is incompatible with current model config.")
+            print(
+                "Checkpoint:"
+                f" embed={ckpt_embed}, heads={ckpt_heads}, layers={ckpt_layers},"
+                f" ctx={ckpt_ctx}, vocab={ckpt_vocab}"
+            )
+            print(
+                "Current:"
+                f" embed={embed_size}, heads={num_heads}, layers={num_layers},"
+                f" ctx={effective_context_length}, vocab={expected_vocab}"
+            )
+            print("Starting fresh training run with current config.")
+        else:
+            model.load_state_dict(resume_ckpt["model_state_dict"])
+            if "optimizer_state_dict" in resume_ckpt:
+                optimizer.load_state_dict(resume_ckpt["optimizer_state_dict"])
+            start_step = int(resume_ckpt.get("step", -1)) + 1
+            best_test_loss = float(resume_ckpt.get("best_test_loss", best_test_loss))
+            processed_tokens = int(
+                resume_ckpt.get(
+                    "processed_tokens",
+                    start_step * batch_size * effective_context_length,
+                )
+            )
+            total_training_seconds = float(resume_ckpt.get("total_training_seconds", 0.0))
+            print(f"Resumed from checkpoint at step {start_step}")
+            print(f"Cumulative training time: {format_duration(total_training_seconds)}")
 
 run_start_time = time.time()
 
@@ -583,7 +631,7 @@ generated = generate(
     do_sample=True,
 )
 completion = generated[len(prompt):] if generated.startswith(prompt) else generated
-for marker in ("\nUser:", "\nSystem:"):
+for marker in ("\nUser:", "\nSystem:", "\nAssistant:"):
     idx = completion.find(marker)
     if idx != -1:
         completion = completion[:idx]
