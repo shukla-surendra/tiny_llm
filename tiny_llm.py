@@ -11,8 +11,36 @@ import tiktoken
 from tqdm import trange
 
 # -------- CONFIG --------
-train_data_path = Path("data/train.txt")
-test_data_path = Path("data/test.txt")
+def is_colab_runtime():
+    return "COLAB_RELEASE_TAG" in os.environ or "COLAB_GPU" in os.environ
+
+
+default_colab_data_root = Path("/content/drive/MyDrive/data")
+default_colab_artifact_root = Path("/content/drive/MyDrive/tiny_llm")
+
+colab_data_root = Path(os.getenv("COLAB_DRIVE_DATA_DIR", str(default_colab_data_root)))
+colab_artifact_root = Path(
+    os.getenv("COLAB_DRIVE_ARTIFACT_DIR", str(default_colab_artifact_root))
+)
+use_colab_drive_paths = is_colab_runtime() and colab_data_root.exists()
+
+if use_colab_drive_paths:
+    data_root = colab_data_root
+    artifact_root = colab_artifact_root
+    artifact_root.mkdir(parents=True, exist_ok=True)
+    print(f"Colab mode: reading dataset from {data_root}")
+    print(f"Colab mode: saving checkpoints/logs to {artifact_root}")
+else:
+    data_root = Path("data")
+    artifact_root = Path(".")
+    if is_colab_runtime():
+        print(
+            "Colab detected but Drive data path was not found at "
+            f"{colab_data_root}. Falling back to local paths."
+        )
+
+train_data_path = data_root / "train.txt"
+test_data_path = data_root / "test.txt"
 
 # ~120M-parameter configuration with conservative micro-batching for MPS laptops.
 context_length = 1024
@@ -28,12 +56,12 @@ min_lr = 3e-5
 steps = 1000000 # 1M Steps
 eval_interval = 50
 eval_batches = 20
-eval_history_path = Path("logs/train_eval_history.csv")
+eval_history_path = artifact_root / "logs/train_eval_history.csv"
 
-checkpoint_path = "tiny_llm_checkpoint.pt"
-latest_checkpoint_path = "tiny_llm_checkpoint_latest.pt"
-best_checkpoint_path = "tiny_llm_checkpoint_best.pt"
-final_checkpoint_path = "tiny_llm_checkpoint_final.pt"
+checkpoint_path = artifact_root / "tiny_llm_checkpoint.pt"
+latest_checkpoint_path = artifact_root / "tiny_llm_checkpoint_latest.pt"
+best_checkpoint_path = artifact_root / "tiny_llm_checkpoint_best.pt"
+final_checkpoint_path = artifact_root / "tiny_llm_checkpoint_final.pt"
 max_new_tokens = 80
 save_every_steps = 200
 resume_training = True
@@ -359,7 +387,7 @@ start_step = 0
 processed_tokens = 0
 total_training_seconds = 0.0
 
-if resume_training and Path(latest_checkpoint_path).exists():
+if resume_training and latest_checkpoint_path.exists():
     resume_ckpt = torch.load(latest_checkpoint_path, map_location=device)
     model.load_state_dict(resume_ckpt["model_state_dict"])
     if "optimizer_state_dict" in resume_ckpt:
@@ -511,7 +539,7 @@ final_payload = make_checkpoint_payload(
 )
 torch.save(final_payload, final_checkpoint_path)
 torch.save(final_payload, latest_checkpoint_path)
-if not Path(checkpoint_path).exists():
+if not checkpoint_path.exists():
     torch.save(final_payload, checkpoint_path)
 print(f"Saved latest checkpoint: {latest_checkpoint_path}")
 print(f"Saved final checkpoint: {final_checkpoint_path}")
