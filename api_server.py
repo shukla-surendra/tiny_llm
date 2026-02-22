@@ -7,7 +7,7 @@ import torch.nn as nn
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-checkpoint_path = Path("tiny_llm_checkpoint_latest.pt")
+checkpoint_path = Path("tiny_llm_checkpoint_best.pt")
 if torch.cuda.is_available():
     device = "cuda"
 elif torch.backends.mps.is_available():
@@ -155,7 +155,7 @@ def postprocess_completion(text):
     cleaned = text.lstrip()
     if cleaned.startswith("Assistant:"):
         cleaned = cleaned[len("Assistant:"):].lstrip()
-    for marker in ("\nUser:", "\nSystem:"):
+    for marker in ("\nUser:", "\nSystem:", "\nAssistant:"):
         idx = cleaned.find(marker)
         if idx != -1:
             cleaned = cleaned[:idx]
@@ -191,12 +191,17 @@ def generate_text(model, tokenizer, context_length, req: GenerateRequest):
 
 
 def load_runtime():
-    if not checkpoint_path.exists():
+    # Fallback to latest if best doesn't exist yet
+    path_to_load = checkpoint_path
+    if not path_to_load.exists() and Path("tiny_llm_checkpoint_latest.pt").exists():
+        path_to_load = Path("tiny_llm_checkpoint_latest.pt")
+
+    if not path_to_load.exists():
         raise FileNotFoundError(
-            f"{checkpoint_path} not found. Run `python tiny_llm.py` first."
+            f"{path_to_load} not found. Run `python tiny_llm.py` first."
         )
 
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(path_to_load, map_location=device)
     tokenizer = tiktoken.get_encoding(checkpoint.get("tokenizer", "gpt2"))
 
     model = TinyGPT(

@@ -1,3 +1,16 @@
+---
+language:
+- en
+license: mit
+library_name: pytorch
+tags:
+- text-generation
+- causal-lm
+datasets:
+- lmsys/lmsys-chat-1m
+pipeline_tag: text-generation
+---
+
 # Tiny LLM (Local Training + Inference + API)
 
 This project trains and serves a small GPT-style language model on conversation data.
