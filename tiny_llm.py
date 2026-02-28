@@ -295,6 +295,16 @@ class TinyGPT(nn.Module):
         # Common in GPT models: tie input embedding and output projection weights.
         self.lm_head.weight = self.token_emb.weight
 
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+
     def forward(self, x):
         _, seq_len = x.shape
         pos = torch.arange(seq_len, device=x.device)
@@ -484,6 +494,7 @@ progress = trange(steps, desc="training", unit="step", initial=start_step)
 optimizer.zero_grad(set_to_none=True)
 last_completed_step = start_step - 1
 interrupted = False
+latest_eval_metrics = None
 try:
     for step in range(start_step, steps):
         if step % eval_interval == 0 or step == steps - 1:
@@ -529,13 +540,11 @@ try:
                     "total_training_hours": f"{current_total_training_seconds() / 3600.0:.4f}",
                 },
             )
-            progress.set_postfix(
-                train_loss=f"{losses['train']:.4f}",
-                test_loss=f"{losses['test']:.4f}",
-                test_ppl=f"{safe_perplexity(losses['test']):.1f}",
-                est_epoch=f"{est_epoch:.3f}",
-                total_h=f"{current_total_training_seconds() / 3600.0:.2f}",
-            )
+            latest_eval_metrics = {
+                "train_loss": f"{losses['train']:.4f}",
+                "test_loss": f"{losses['test']:.4f}",
+                "test_ppl": f"{safe_perplexity(losses['test']):.1f}",
+            }
 
         xb, yb, mb = get_batch(train_tokens, train_target_mask, effective_context_length)
         logits = model(xb)
@@ -550,11 +559,15 @@ try:
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)
-        progress.set_postfix(
-            batch_loss=f"{loss.item():.4f}",
-            est_epoch=f"{processed_tokens / len(train_tokens):.3f}",
-            lr=f"{optimizer.param_groups[0]['lr']:.2e}",
-        )
+        postfix = {
+            "batch_loss": f"{loss.item():.4f}",
+            "est_epoch": f"{processed_tokens / len(train_tokens):.3f}",
+            "lr": f"{optimizer.param_groups[0]['lr']:.2e}",
+            "total_h": f"{current_total_training_seconds() / 3600.0:.2f}",
+        }
+        if latest_eval_metrics is not None:
+            postfix.update(latest_eval_metrics)
+        progress.set_postfix(**postfix)
         progress.update(1)
         processed_tokens += batch_size * effective_context_length
         last_completed_step = step

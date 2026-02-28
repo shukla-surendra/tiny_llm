@@ -30,3 +30,4 @@ data/test_prompts.txt
 data
 logs
 logs/train_eval_history.csv
+tinyllama_chat/outputs/*

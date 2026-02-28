@@ -57,7 +57,7 @@ The current default model in `tiny_llm.py` is:
 
 ### Parameter count (current config)
 
-- **124,439,808 trainable parameters** (about **124.4M**)
+- **152,791,296 trainable parameters** (about **152.8M**)
 
 What is a parameter:
 - A parameter is a learned numeric value (weight or bias) updated by backpropagation.
@@ -74,7 +74,7 @@ How this was calculated from `tiny_llm.py`:
   - `vocab_size = 50257` (from GPT-2 tokenizer)
   - `context_length = 1024`
   - `embed_size = 768`
-  - `num_layers = 12`
+  - `num_layers = 16`
   - `num_heads = 12` (affects attention shape, not total formula independently once `embed_size` is fixed)
 - Weight tying:
   - `lm_head.weight = token_emb.weight`, so output head does not add a second vocab projection matrix.
@@ -85,7 +85,7 @@ Breakdown:
   - `50257 * 768 = 38,597,376`
 - Positional embedding: `context_length * embed_size`
   - `1024 * 768 = 786,432`
-- Per Transformer block (`12` blocks):
+- Per Transformer block (`16` blocks):
   - Attention params:
     - `in_proj_weight`: `3E*E`
     - `in_proj_bias`: `3E`
@@ -96,12 +96,12 @@ Breakdown:
   - LayerNorms:
     - two layer norms, each has `2E` params (weight + bias)
   - Per block total with `E=768`: `7,087,872`
-  - All blocks: `7,087,872 * 12 = 85,054,464`
+  - All blocks: `7,087,872 * 16 = 113,405,952`
 - Final LayerNorm: `2E = 1,536`
 
 Final total:
 
-- `38,597,376 + 786,432 + 85,054,464 + 1,536 = 124,439,808`
+- `38,597,376 + 786,432 + 113,405,952 + 1,536 = 152,791,296`
 
 This is a small model for local experimentation, not a production-scale LLM.
 
@@ -109,7 +109,7 @@ This is a small model for local experimentation, not a production-scale LLM.
 
 This project is **not** a 1B model right now.
 
-- Current: ~123.8M params
+- Current: ~152.8M params
 - 1B means ~1,000,000,000 params (about 8x larger than current)
 
 To approach 1B, you generally need much larger settings (example direction):
